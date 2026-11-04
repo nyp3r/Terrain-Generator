@@ -13,6 +13,9 @@ import "core:math"
 import "core:math/noise"
 import "core:sync"
 import "core:thread"
+import "core:time"
+
+WORKER_THREADS :: 8
 
 main :: proc() {
 
@@ -131,8 +134,7 @@ main :: proc() {
 
   // ------------------------- threads --------------------------------------
 
-
-
+  timer: i64
 
   // ------------------------- threads --------------------------------------
 
@@ -157,8 +159,9 @@ main :: proc() {
     imgui.DragInt("octaves", (^i32)(&world.octaves), 0.1, 2, 10, flags = imgui.SliderFlags{imgui.SliderFlag.NoSpeedTweaks})
     imgui.DragFloat("amplitude", &world.amplitude, 0.1, 0, 10)
     imgui.DragFloat("persistence", &world.persistence, 0.1, 0, 10)
-    
+
     if imgui.Button("apply", imgui.Vec2{100, 20}) {
+      timer_start := time.now()._nsec
       // tracks the threads
       wait_group: sync.Wait_Group
 
@@ -209,8 +212,11 @@ main :: proc() {
       // }
       rl.UnloadTexture(texture)
       texture = rl.LoadTextureFromImage(img)
-    }
 
+      timer = time.now()._nsec - timer_start
+   }
+
+    imgui.Text(fmt.ctprintf("%d", timer))
     imgui.Text(fmt.ctprintf("%d", rl.GetFPS()))
     imgui.End()
 
