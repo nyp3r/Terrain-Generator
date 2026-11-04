@@ -1,5 +1,9 @@
 package main
 
+import "core:slice/heap"
+import "core:slice"
+import "core:mem/virtual"
+import "core:mem"
 import "core:fmt"
 import terrain "../TerrainTopDown"
 import rl "vendor:raylib"
@@ -96,9 +100,15 @@ main :: proc() {
 
 
   // ------------------------------------------------------------------------
-  alloc_size := u32(world.height_tiles * world.width_tiles * size_of(rl.Color))
-  pixels := ([^]rl.Color)(rl.MemAlloc(alloc_size))
-  defer rl.MemFreePtr(rawptr(pixels))
+  pixels_len := world.width_tiles *world.height_tiles
+  alloc_size := int(pixels_len * size_of(rl.Color))
+  pixels_ptr, err := mem.alloc(alloc_size)
+  defer mem.free(pixels_ptr)
+  if err != mem.Allocator_Error.None {
+    fmt.println(err)
+    panic("pixels allocation error")
+  }
+  pixels := slice.from_ptr(([^]rl.Color)(pixels_ptr), pixels_len)
 
   for x in 0..<world.width_tiles {
     for y in 0..<world.height_tiles {
@@ -109,7 +119,7 @@ main :: proc() {
   }
 
   img := rl.Image {
-    data = rawptr(pixels),
+    data = pixels_ptr,
     width = i32(world.width_tiles) * i32(world.tile_size),
     height = i32(world.height_tiles) * i32(world.tile_size),
     mipmaps = 1,
@@ -119,7 +129,12 @@ main :: proc() {
   // ------------------------------------------------------------------------
 
 
+  // ------------------------- threads --------------------------------------
 
+
+
+
+  // ------------------------- threads --------------------------------------
 
 
 
@@ -144,18 +159,54 @@ main :: proc() {
     imgui.DragFloat("persistence", &world.persistence, 0.1, 0, 10)
     
     if imgui.Button("apply", imgui.Vec2{100, 20}) {
+      // tracks the threads
+      wait_group: sync.Wait_Group
 
-      octaves_check := math.pow(f32(2), f32(world.octaves))
-
-      terrain.populate_heightmap(world, &heightmap)
-      for x in 0..<world.width_tiles {
-        for y in 0..<world.height_tiles {
-          i := (y * world.width_tiles + x)
-          terrain.recalculate_tile(world, &heightmap[i], octaves_check, noise.Vec2{f64(x), f64(y)})
-          color := terrain.noise_to_color_lerp(colors, heightmap[i])
-          pixels[i] = color
-        }
+      // create threads
+      thread1 := thread.create(worker)
+      thread1.init_context = context
+      thread1.user_index = 1
+      thread1.data = &Worker_Data{
+        wait_group = &wait_group,
+        world_info = &world,
+        heightmap_slice = heightmap[:len(heightmap)/2],
+        pixels_slice = pixels[:len(pixels)/2],
+        colors = colors,
+        thread_number = 1,
       }
+
+      thread2 := thread.create(worker)
+      thread2.init_context = context
+      thread2.user_index = 1
+      thread2.data = &Worker_Data{
+        wait_group = &wait_group,
+        world_info = &world,
+        heightmap_slice = heightmap[len(heightmap)/2:],
+        pixels_slice = pixels[len(pixels)/2:],
+        colors = colors,
+        thread_number = 2,
+      }
+
+      // prepare for start of thread(s)
+      sync.wait_group_add(&wait_group, 2)
+      // start threads
+      thread.start(thread1)
+      thread.start(thread2)
+
+      // if the threads are don working, the counter will be 0
+      // then this will be called
+      sync.wait_group_wait(&wait_group)
+
+      // octaves_check := math.pow(f32(2), f32(world.octaves))
+      //
+      // for x in 0..<world.width_tiles {
+      //   for y in 0..<world.height_tiles {
+      //     i := (y * world.width_tiles + x)
+      //     terrain.recalculate_tile(world, &heightmap[i], octaves_check, noise.Vec2{f64(x), f64(y)})
+      //     color := terrain.noise_to_color_lerp(colors, heightmap[i])
+      //     pixels[i] = color
+      //   }
+      // }
       rl.UnloadTexture(texture)
       texture = rl.LoadTextureFromImage(img)
     }
@@ -194,4 +245,52 @@ main :: proc() {
 
   rl.UnloadTexture(texture)
   rl.CloseWindow()
+}
+
+worker :: proc(t: ^thread.Thread) {
+  worker_data := cast(^Worker_Data)t.data
+  world := worker_data.world_info
+  colors := worker_data.colors
+
+  octaves_check := math.pow(2, f32(worker_data.world_info.octaves))
+
+  y_start := 0
+  y_end := world.height_tiles
+
+  switch(worker_data.thread_number){
+    case 1:
+      y_end = world.height_tiles/2
+
+    case 2:
+      y_start = world.height_tiles/2
+  }
+
+  for x in 0..<world.width_tiles {
+    for y in y_start..<y_end {
+      i := ((y - y_start) * world.width_tiles + x)
+
+      current_tile := worker_data.heightmap_slice[i]
+      terrain.recalculate_tile(world^, &worker_data.heightmap_slice[i], octaves_check, noise.Vec2{f64(x), f64(y)})
+      color := terrain.noise_to_color_lerp(colors, worker_data.heightmap_slice[i])
+      r := color.r
+      g := color.g
+      b := color.b
+      a := color.a
+      worker_data.pixels_slice[i] = color
+    }
+  }
+
+  fmt.println("thread", worker_data.thread_number, "is done")
+  sync.wait_group_done(worker_data.wait_group)
+}
+
+Worker_Data :: struct {
+  heightmap_slice: []f32,
+  colors: []terrain.World_Color,
+  pixels_slice: []rl.Color,
+
+  wait_group: ^sync.Wait_Group,
+
+  thread_number: int,
+  world_info: ^terrain.World,
 }
