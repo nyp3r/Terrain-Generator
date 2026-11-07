@@ -1,8 +1,6 @@
 package main
 
-import "core:slice/heap"
 import "core:slice"
-import "core:mem/virtual"
 import "core:mem"
 import "core:fmt"
 import terrain "../TerrainTopDown"
@@ -11,7 +9,6 @@ import imgui "./odin-imgui"
 import imgui_rl "./imgui_impl_raylib"
 import "core:math"
 import "core:math/noise"
-import "core:sync"
 import "core:thread"
 import "core:time"
 
@@ -98,10 +95,6 @@ main :: proc() {
   heightmap := terrain.make_heightmap(world.width_tiles, world.height_tiles)
   terrain.populate_heightmap(world, &heightmap)
 
-
-
-
-
   // ------------------------------------------------------------------------
   pixels_len := world.width_tiles *world.height_tiles
   alloc_size := int(pixels_len * size_of(rl.Color))
@@ -134,7 +127,15 @@ main :: proc() {
 
   // ------------------------- threads --------------------------------------
 
-  timer: i64
+  data := Worker_Data{
+    world_data = &world,
+    heightmap_data = heightmap,
+    pixel_data = pixels,
+    color_data = colors,
+  }
+
+
+  // thread.pool_add_task(&thread_pool, context.allocator, worker, &data, 0)
 
   // ------------------------- threads --------------------------------------
 
@@ -143,6 +144,7 @@ main :: proc() {
 
   rl.SetTargetFPS(165)
 
+  timer: i64
   delta, last_time: f64
 
   for !rl.WindowShouldClose() {
@@ -151,8 +153,15 @@ main :: proc() {
     imgui_rl.new_frame()
     imgui.NewFrame()
 
+    rl_color_to_f32_color :: proc(rl_color: rl.Color) -> (return_color: [4]f32) {
+      for i in 0..<4 {
+        return_color[i] = 1.0 / f32(rl_color[i])
+      }
+      return
+    }
+
     // Create UI windows as normal
-    imgui.Begin("Debug Window")
+    imgui.Begin("editor", flags=imgui.WindowFlags{imgui.WindowFlag.NoCollapse})
 
     imgui.InputDouble("frequency", &world.frequency, 0.0001, 0.0005)
     imgui.InputDouble("lacunarity", &world.lacunarity, 0.1, 0.5)
@@ -160,64 +169,44 @@ main :: proc() {
     imgui.DragFloat("amplitude", &world.amplitude, 0.1, 0, 10)
     imgui.DragFloat("persistence", &world.persistence, 0.1, 0, 10)
 
+    imgui.BeginChild("colors", 
+      child_flags=imgui.ChildFlags{
+        imgui.ChildFlag.Borders, 
+        imgui.ChildFlag.AlwaysUseWindowPadding
+      }
+    )
+    for &color, i in colors {
+      id := fmt.ctprintf("%d", color.height_value)
+      imgui.PushID(id)
+      // TODO:
+      // imgui.ColorEdit4(id, rl_color_to_f32_color(color.color))
+      imgui.InputFloat("height", &color.height_value)
+      imgui.PopID()
+    }
+    imgui.EndChild()
+
     if imgui.Button("apply", imgui.Vec2{100, 20}) {
       timer_start := time.now()._nsec
-      // tracks the threads
-      wait_group: sync.Wait_Group
 
-      // create threads
-      thread1 := thread.create(worker)
-      thread1.init_context = context
-      thread1.user_index = 1
-      thread1.data = &Worker_Data{
-        wait_group = &wait_group,
-        world_info = &world,
-        heightmap_slice = heightmap[:len(heightmap)/2],
-        pixels_slice = pixels[:len(pixels)/2],
-        colors = colors,
-        thread_number = 1,
+      thread_pool: thread.Pool
+      thread.pool_init(&thread_pool, context.allocator, WORKER_THREADS)
+
+      for i in 0..<WORKER_THREADS {
+        thread.pool_add_task(&thread_pool, context.allocator, worker, &data, i)
       }
 
-      thread2 := thread.create(worker)
-      thread2.init_context = context
-      thread2.user_index = 1
-      thread2.data = &Worker_Data{
-        wait_group = &wait_group,
-        world_info = &world,
-        heightmap_slice = heightmap[len(heightmap)/2:],
-        pixels_slice = pixels[len(pixels)/2:],
-        colors = colors,
-        thread_number = 2,
-      }
+      thread.pool_start(&thread_pool)
+      thread.pool_finish(&thread_pool)
 
-      // prepare for start of thread(s)
-      sync.wait_group_add(&wait_group, 2)
-      // start threads
-      thread.start(thread1)
-      thread.start(thread2)
-
-      // if the threads are don working, the counter will be 0
-      // then this will be called
-      sync.wait_group_wait(&wait_group)
-
-      // octaves_check := math.pow(f32(2), f32(world.octaves))
-      //
-      // for x in 0..<world.width_tiles {
-      //   for y in 0..<world.height_tiles {
-      //     i := (y * world.width_tiles + x)
-      //     terrain.recalculate_tile(world, &heightmap[i], octaves_check, noise.Vec2{f64(x), f64(y)})
-      //     color := terrain.noise_to_color_lerp(colors, heightmap[i])
-      //     pixels[i] = color
-      //   }
-      // }
       rl.UnloadTexture(texture)
       texture = rl.LoadTextureFromImage(img)
+      thread.pool_destroy(&thread_pool)
 
       timer = time.now()._nsec - timer_start
    }
 
-    imgui.Text(fmt.ctprintf("%d", timer))
-    imgui.Text(fmt.ctprintf("%d", rl.GetFPS()))
+    imgui.Text(fmt.ctprintf("timer(ms): %d", timer/1000_000))
+    imgui.Text(fmt.ctprintf("FPS: %d", rl.GetFPS()))
     imgui.End()
 
     imgui.Render()
@@ -253,50 +242,32 @@ main :: proc() {
   rl.CloseWindow()
 }
 
-worker :: proc(t: ^thread.Thread) {
-  worker_data := cast(^Worker_Data)t.data
-  world := worker_data.world_info
-  colors := worker_data.colors
+worker :: proc(t: thread.Task) {
+  data := cast(^Worker_Data)t.data
+  world := data.world_data
+  colors := data.color_data
 
-  octaves_check := math.pow(2, f32(worker_data.world_info.octaves))
+  array_len := data.world_data.width_tiles * data.world_data.height_tiles
+  per_task := world.height_tiles / WORKER_THREADS
+  y_start := t.user_index*per_task
+  y_end := (t.user_index+1)*per_task
 
-  y_start := 0
-  y_end := world.height_tiles
-
-  switch(worker_data.thread_number){
-    case 1:
-      y_end = world.height_tiles/2
-
-    case 2:
-      y_start = world.height_tiles/2
-  }
+  octaves_check := math.pow(2, f32(data.world_data.octaves))
 
   for x in 0..<world.width_tiles {
     for y in y_start..<y_end {
-      i := ((y - y_start) * world.width_tiles + x)
-
-      current_tile := worker_data.heightmap_slice[i]
-      terrain.recalculate_tile(world^, &worker_data.heightmap_slice[i], octaves_check, noise.Vec2{f64(x), f64(y)})
-      color := terrain.noise_to_color_lerp(colors, worker_data.heightmap_slice[i])
-      r := color.r
-      g := color.g
-      b := color.b
-      a := color.a
-      worker_data.pixels_slice[i] = color
+      i := (y * world.width_tiles + x)
+      current_tile := data.heightmap_data[i]
+      terrain.recalculate_tile(world^, &data.heightmap_data[i], octaves_check, noise.Vec2{f64(x), f64(y)})
+      color := terrain.noise_to_color_lerp(colors, data.heightmap_data[i])
+      data.pixel_data[i] = color
     }
   }
-
-  fmt.println("thread", worker_data.thread_number, "is done")
-  sync.wait_group_done(worker_data.wait_group)
 }
 
 Worker_Data :: struct {
-  heightmap_slice: []f32,
-  colors: []terrain.World_Color,
-  pixels_slice: []rl.Color,
-
-  wait_group: ^sync.Wait_Group,
-
-  thread_number: int,
-  world_info: ^terrain.World,
+  heightmap_data: []f32,
+  color_data: []terrain.World_Color,
+  pixel_data: []rl.Color,
+  world_data: ^terrain.World,
 }
