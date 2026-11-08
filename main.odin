@@ -5,14 +5,18 @@ import "core:mem"
 import "core:fmt"
 import terrain "../TerrainTopDown"
 import rl "vendor:raylib"
-import imgui "./odin-imgui"
-import imgui_rl "./imgui_impl_raylib"
 import "core:math"
 import "core:math/noise"
 import "core:thread"
-import "core:time"
 
 WORKER_THREADS :: 8
+
+UI_Values :: struct {
+  size: f32,
+  start_position: rl.Vector2,
+  slider_size_multiplier: f32,
+  slider_length: f32,
+}
 
 main :: proc() {
 
@@ -29,67 +33,19 @@ main :: proc() {
     persistence = 2.0,
   }
 
-  colors := []terrain.World_Color {
-    terrain.World_Color {
-      height_value = 9999,
-      color = rl.WHITE
-    },
-    terrain.World_Color {
-      height_value = 12,
-      color = rl.WHITE
-    },
-    terrain.World_Color {
-      height_value = 11,
-      color = rl.WHITE
-    },
-    terrain.World_Color {
-      height_value = 3,
-      color = rl.GRAY
-    },
-    terrain.World_Color {
-      height_value = 2,
-      color = rl.Color{0, 180, 0, 255}
-    },
-    terrain.World_Color {
-      height_value = 0,
-      color = rl.Color{0, 200, 0, 255}
-    },
-    terrain.World_Color {
-      height_value = -1,
-      color = rl.Color{0, 200, 0, 255}
-    },
-    terrain.World_Color {
-      height_value = -4,
-      color = rl.Color{0, 180, 0, 255}
-    },
-    terrain.World_Color {
-      height_value = -5,
-      color = rl.BLUE
-    },
-    terrain.World_Color {
-      height_value = -10,
-      color = rl.DARKBLUE
-    },
-    terrain.World_Color {
-      height_value = -9999,
-      color = rl.DARKBLUE
-    },
-  }
-
+  colors: [dynamic]terrain.World_Color
+  append(&colors, terrain.World_Color{99999, rl.WHITE})
+  append(&colors, terrain.World_Color{10, rl.WHITE})
+  append(&colors, terrain.World_Color{3, rl.GRAY})
+  append(&colors, terrain.World_Color{2, rl.Color{0, 180, 0, 255}})
+  append(&colors, terrain.World_Color{0, rl.Color{0, 200, 0, 255}})
+  append(&colors, terrain.World_Color{-1, rl.Color{0, 180, 0, 255}})
+  append(&colors, terrain.World_Color{-4, rl.Color{0, 200, 0, 255}})
+  append(&colors, terrain.World_Color{-6, rl.BLUE})
+  append(&colors, terrain.World_Color{-10, rl.DARKBLUE})
+  append(&colors, terrain.World_Color{-99999, rl.DARKBLUE})
 
   rl.InitWindow(i32(world.width_tiles*world.tile_size), i32(world.height_tiles*world.tile_size), "Raylib")
-
-
-  // ---------------------- imgui ---------------------------
-  // Initialize core ImGui
-  imgui.CreateContext(nil)
-  defer imgui.DestroyContext(nil)
-
-  // Initialize the Raylib-specific bridge
-  imgui_rl.init()
-  defer imgui_rl.shutdown()
-  // ---------------------- imgui ---------------------------
-
 
 
   heightmap := terrain.make_heightmap(world.width_tiles, world.height_tiles)
@@ -109,7 +65,7 @@ main :: proc() {
   for x in 0..<world.width_tiles {
     for y in 0..<world.height_tiles {
       i := (y * world.width_tiles + x)
-      color := terrain.noise_to_color_lerp(colors, heightmap[i])
+      color := terrain.noise_to_color_lerp(colors[:], heightmap[i])
       pixels[i] = color
     }
   }
@@ -124,70 +80,106 @@ main :: proc() {
   texture := rl.LoadTextureFromImage(img)
   // ------------------------------------------------------------------------
 
-
-  // ------------------------- threads --------------------------------------
-
+  // for the thread pool
   data := Worker_Data{
     world_data = &world,
     heightmap_data = heightmap,
     pixel_data = pixels,
-    color_data = colors,
+    color_data = colors[:],
   }
 
-
-  // thread.pool_add_task(&thread_pool, context.allocator, worker, &data, 0)
-
-  // ------------------------- threads --------------------------------------
-
-
-
-
   rl.SetTargetFPS(165)
+
+  ui_style := UI_Values{
+    size = 30,
+    start_position = rl.Vector2{100, 100},
+    slider_size_multiplier = 0.75,
+    slider_length = 100,
+  }
+  holding_slider_index: int
+  is_holding_slider := false
+  selecting_color := false
+  color_select_index: int
 
   timer: i64
   delta, last_time: f64
 
+  // TODO:
+  // * proper UI placements
+  // * adding more colors
+  // * UI for changing algorithm values
+  //
+  // TODO: future ideas
+  // * additional simplex noise for ores or similar
+
   for !rl.WindowShouldClose() {
-    // ---------------------- imgui ---------------------------
-    // Feed Raylib inputs to ImGui and start the frame
-    imgui_rl.new_frame()
-    imgui.NewFrame()
+    // Update:
+    delta = rl.GetTime() - last_time
+    last_time = rl.GetTime()
 
-    rl_color_to_f32_color :: proc(rl_color: rl.Color) -> (return_color: [4]f32) {
-      for i in 0..<4 {
-        return_color[i] = 1.0 / f32(rl_color[i])
-      }
-      return
+    if rl.IsKeyPressed(rl.KeyboardKey.Q) {
+      rl.CloseWindow()
     }
 
-    // Create UI windows as normal
-    imgui.Begin("editor", flags=imgui.WindowFlags{imgui.WindowFlag.NoCollapse})
-
-    imgui.InputDouble("frequency", &world.frequency, 0.0001, 0.0005)
-    imgui.InputDouble("lacunarity", &world.lacunarity, 0.1, 0.5)
-    imgui.DragInt("octaves", (^i32)(&world.octaves), 0.1, 2, 10, flags = imgui.SliderFlags{imgui.SliderFlag.NoSpeedTweaks})
-    imgui.DragFloat("amplitude", &world.amplitude, 0.1, 0, 10)
-    imgui.DragFloat("persistence", &world.persistence, 0.1, 0, 10)
-
-    imgui.BeginChild("colors", 
-      child_flags=imgui.ChildFlags{
-        imgui.ChildFlag.Borders, 
-        imgui.ChildFlag.AlwaysUseWindowPadding
-      }
-    )
-    for &color, i in colors {
-      id := fmt.ctprintf("%d", color.height_value)
-      imgui.PushID(id)
-      // TODO:
-      // imgui.ColorEdit4(id, rl_color_to_f32_color(color.color))
-      imgui.InputFloat("height", &color.height_value)
-      imgui.PopID()
+    // Picking colors
+    if rl.IsKeyDown(rl.KeyboardKey.X){
+      selecting_color = false
     }
-    imgui.EndChild()
+    color_select: for i in 0..<len(colors) {
+      circle_pos_x := terrain.min_max_normalization(100, 800, -10, 10, colors[i].height_value)
+      if rl.IsMouseButtonDown(rl.MouseButton.RIGHT) && rl.CheckCollisionPointCircle(rl.GetMousePosition(), rl.Vector2{circle_pos_x, 100}, 13) {
+        selecting_color = true
+        color_select_index = i
+        break color_select
+      }
+    }
 
-    if imgui.Button("apply", imgui.Vec2{100, 20}) {
-      timer_start := time.now()._nsec
+    // Dragging sliders
+    if rl.IsMouseButtonDown(rl.MouseButton.LEFT) {
+      if !is_holding_slider {
+        height_value: for i in 0..<len(colors) {
+          circle_pos_x := terrain.min_max_normalization(100, 800, -10, 10, colors[i].height_value)
+          if rl.IsMouseButtonDown(rl.MouseButton.LEFT) && rl.CheckCollisionPointCircle(rl.GetMousePosition(), rl.Vector2{circle_pos_x, 100}, 13) {
+            is_holding_slider = true
+            holding_slider_index = i
+            break height_value
+          }
+        }
+      }
+      else {
+        colors[holding_slider_index].height_value = math.clamp(terrain.min_max_normalization(-10, 10, 100, 800, rl.GetMousePosition().x), -10, 10)
+        if colors[holding_slider_index].height_value > colors[holding_slider_index-1].height_value {
+          slice.swap(colors[:], holding_slider_index, holding_slider_index-1)
+          holding_slider_index -= 1
+          color_select_index -= 1
+        }
+        else if colors[holding_slider_index].height_value < colors[holding_slider_index+1].height_value {
+          slice.swap(colors[:], holding_slider_index, holding_slider_index+1)
+          holding_slider_index += 1
+          color_select_index += 1
+        }
+      }
+    }
+    else do is_holding_slider = false
 
+
+    // Draw:
+    rl.BeginDrawing()
+    rl.ClearBackground(rl.WHITE)
+    rl.DrawTexture(texture, 0, 0, rl.WHITE)
+
+    rl.DrawLine(100, 100, 800, 100, rl.RED)
+    for i in 0..<len(colors) {
+      circle_pos_x := terrain.min_max_normalization(100, 800, -10, 10, colors[i].height_value)
+      rl.DrawCircle(i32(circle_pos_x), 100, 13, rl.BLACK)
+      rl.DrawCircle(i32(circle_pos_x), 100, 10, colors[i].color)
+    }
+
+    if selecting_color {
+      rl.GuiColorPicker(rl.Rectangle{100, 200, 75, 75}, "picker", &colors[color_select_index].color)
+    }
+
+    if rl.GuiButton(rl.Rectangle{20, 20, 50, 20}, "apply") {
       thread_pool: thread.Pool
       thread.pool_init(&thread_pool, context.allocator, WORKER_THREADS)
 
@@ -201,40 +193,9 @@ main :: proc() {
       rl.UnloadTexture(texture)
       texture = rl.LoadTextureFromImage(img)
       thread.pool_destroy(&thread_pool)
-
-      timer = time.now()._nsec - timer_start
-   }
-
-    imgui.Text(fmt.ctprintf("timer(ms): %d", timer/1000_000))
-    imgui.Text(fmt.ctprintf("FPS: %d", rl.GetFPS()))
-    imgui.End()
-
-    imgui.Render()
-    // ---------------------- imgui ---------------------------
-
-
-    // Update:
-    delta = rl.GetTime() - last_time
-    last_time = rl.GetTime()
-
-    if rl.IsKeyPressed(rl.KeyboardKey.Q) {
-      rl.CloseWindow()
     }
 
-    // Draw:
-    rl.BeginDrawing()
-    rl.ClearBackground(rl.WHITE)
-
-
-    // if slider is used... change texture
-
-    rl.DrawTexture(texture, 0, 0, rl.WHITE)
-
     rl.DrawFPS(0, 0)
-    // imgui
-    imgui_rl.render_draw_data(imgui.GetDrawData())
-    // imgui
-
     rl.EndDrawing()
   }
 
@@ -270,4 +231,83 @@ Worker_Data :: struct {
   color_data: []terrain.World_Color,
   pixel_data: []rl.Color,
   world_data: ^terrain.World,
+}
+
+draw_ui :: proc(ui_style: UI_Values, colors: []terrain.World_Color) {
+  @static color_picker_index: int
+  rl.DrawRectangle(
+    i32(ui_style.start_position.x) - i32(ui_style.size / 2),
+    i32(ui_style.start_position.x) - i32(ui_style.size / 2),
+    i32(ui_style.size) * 2 + i32(ui_style.slider_length + ui_style.size + ui_style.size/2),
+    i32(ui_style.size + ui_style.size/2) * i32(len(colors)) + i32(ui_style.size / 2),
+    rl.BLACK
+  )
+  for i in 0..<len(colors) {
+
+    if rl.GuiButton(
+      rl.Rectangle{
+        ui_style.start_position.x,
+        ui_style.start_position.x + f32(ui_style.size + ui_style.size/2) * f32(i),
+        ui_style.size, 
+        ui_style.size
+      },
+      "color"
+    ) {
+      color_picker_index = i
+    }
+
+    rl.DrawRectangleRec(
+      rl.Rectangle{
+        ui_style.start_position.x,
+        ui_style.start_position.x + f32(ui_style.size + ui_style.size/2) * f32(i),
+        ui_style.size,
+        ui_style.size
+      },
+      colors[i].color
+    )
+
+    rl.GuiSlider(
+      rl.Rectangle{
+        ui_style.start_position.x + ui_style.size*2,
+        ui_style.start_position.y + f32(ui_style.size + ui_style.size/2) * f32(i),
+        ui_style.slider_length,
+        ui_style.size * ui_style.slider_size_multiplier
+      }, 
+      "-10",
+      "10",
+      &colors[i].height_value,
+      -10,
+      10
+    )
+    if i == len(colors)-1 {
+      colors[i].height_value = math.min(colors[i].height_value, colors[i-1].height_value)
+    }
+    else if i == 0 {
+      colors[i].height_value = math.max(colors[i].height_value, colors[i+1].height_value)
+    }
+    else {
+      colors[i].height_value = math.clamp(colors[i].height_value, colors[i+1].height_value, colors[i-1].height_value)
+    }
+
+    rl.GuiLabel(
+      rl.Rectangle{
+        ui_style.start_position.x + ui_style.size*2,
+        ui_style.start_position.y + f32(ui_style.size + ui_style.size/2) * f32(i) - f32(ui_style.size/1.5),
+        100,
+        ui_style.size * ui_style.slider_size_multiplier
+      },
+      fmt.ctprintf("%0.2f", colors[i].height_value)
+    )
+  }
+
+  rl.GuiColorPicker(
+    rl.Rectangle{
+      ui_style.start_position.x + ui_style.size + ui_style.size/2 + ui_style.slider_length + ui_style.size,
+      ui_style.start_position.x + (ui_style.size + ui_style.size/2) * f32(color_picker_index) + ui_style.size/2,
+      ui_style.size*4,
+      ui_style.size*4
+    },
+    "color picker",
+    &colors[color_picker_index].color
+  )
 }
