@@ -4,7 +4,6 @@ import "base:intrinsics"
 import "core:slice"
 import "core:mem"
 import "core:fmt"
-import terrain "../TerrainTopDown"
 import rl "vendor:raylib"
 import "core:math"
 import "core:math/noise"
@@ -31,7 +30,7 @@ UI :: struct {
 
 main :: proc() {
 
-  world := terrain.World {
+  world := World {
     width_tiles = 1280,
     height_tiles = 720,
     tile_size = 1,
@@ -44,23 +43,23 @@ main :: proc() {
     persistence = 2.0,
   }
 
-  colors: [dynamic]terrain.World_Color
-  append(&colors, terrain.World_Color{99999, rl.WHITE})
-  append(&colors, terrain.World_Color{10, rl.WHITE})
-  append(&colors, terrain.World_Color{3, rl.GRAY})
-  append(&colors, terrain.World_Color{2, rl.Color{0, 180, 0, 255}})
-  append(&colors, terrain.World_Color{0, rl.Color{0, 200, 0, 255}})
-  append(&colors, terrain.World_Color{-1, rl.Color{0, 180, 0, 255}})
-  append(&colors, terrain.World_Color{-4, rl.Color{0, 200, 0, 255}})
-  append(&colors, terrain.World_Color{-6, rl.BLUE})
-  append(&colors, terrain.World_Color{-10, rl.DARKBLUE})
-  append(&colors, terrain.World_Color{-99999, rl.DARKBLUE})
+  colors: [dynamic]World_Color
+  append(&colors, World_Color{99999, rl.WHITE})
+  append(&colors, World_Color{10, rl.WHITE})
+  append(&colors, World_Color{3, rl.GRAY})
+  append(&colors, World_Color{2, rl.Color{0, 180, 0, 255}})
+  append(&colors, World_Color{0, rl.Color{0, 200, 0, 255}})
+  append(&colors, World_Color{-1, rl.Color{0, 180, 0, 255}})
+  append(&colors, World_Color{-4, rl.Color{0, 200, 0, 255}})
+  append(&colors, World_Color{-6, rl.BLUE})
+  append(&colors, World_Color{-10, rl.DARKBLUE})
+  append(&colors, World_Color{-99999, rl.DARKBLUE})
 
   rl.InitWindow(i32(world.width_tiles*world.tile_size), i32(world.height_tiles*world.tile_size), "Raylib")
 
 
-  heightmap := terrain.make_heightmap(world.width_tiles, world.height_tiles)
-  terrain.populate_heightmap(world, &heightmap)
+  heightmap := make_heightmap(world.width_tiles, world.height_tiles)
+  populate_heightmap(world, &heightmap)
 
   // ------------------------------------------------------------------------
   pixels_len := world.width_tiles *world.height_tiles
@@ -76,7 +75,7 @@ main :: proc() {
   for x in 0..<world.width_tiles {
     for y in 0..<world.height_tiles {
       i := (y * world.width_tiles + x)
-      color := terrain.noise_to_color_lerp(colors[:], heightmap[i])
+      color := noise_to_color_lerp(colors[:], heightmap[i])
       pixels[i] = color
     }
   }
@@ -163,7 +162,7 @@ main :: proc() {
       hovering_new_color = true
 
       height_value: for i in 0..<len(colors) {
-        circle_pos_x := terrain.min_max_normalization(colors[i].height_value, ui.start_position.x, ui.end_position.x, -10, 10)
+        circle_pos_x := min_max_normalization(colors[i].height_value, ui.start_position.x, ui.end_position.x, -10, 10)
 
         if rl.CheckCollisionPointCircle(
           rl.GetMousePosition(),
@@ -198,7 +197,7 @@ main :: proc() {
     if rl.IsMouseButtonDown(rl.MouseButton.LEFT) {
       // Dragging colors
       if is_holding_color {
-        colors[holding_slider_index].height_value = math.clamp(terrain.min_max_normalization(rl.GetMousePosition().x, -10, 10, ui.start_position.x, ui.end_position.x), -10, 10)
+        colors[holding_slider_index].height_value = math.clamp(min_max_normalization(rl.GetMousePosition().x, -10, 10, ui.start_position.x, ui.end_position.x), -10, 10)
         if colors[holding_slider_index].height_value > colors[holding_slider_index-1].height_value {
           slice.swap(colors[:], holding_slider_index, holding_slider_index-1)
           holding_slider_index -= 1
@@ -214,8 +213,8 @@ main :: proc() {
     else do is_holding_color = false
 
     if hovering_new_color && rl.IsMouseButtonPressed(rl.MouseButton.LEFT) {
-      new_height_value := terrain.min_max_normalization(rl.GetMousePosition().x, -10, 10, ui.start_position.x, ui.end_position.x)
-      new_color := terrain.World_Color {
+      new_height_value := min_max_normalization(rl.GetMousePosition().x, -10, 10, ui.start_position.x, ui.end_position.x)
+      new_color := World_Color {
         height_value = new_height_value,
         color = rl.RED
       }
@@ -241,13 +240,28 @@ main :: proc() {
 
     rl.DrawLineV(ui.start_position, ui.end_position, ui.line_color)
     for i in 0..<len(colors) {
-      circle_pos_x := terrain.min_max_normalization(colors[i].height_value, ui.start_position.x, ui.end_position.x, -10, 10)
+      circle_pos_x := min_max_normalization(colors[i].height_value, ui.start_position.x, ui.end_position.x, -10, 10)
       rl.DrawCircle(i32(circle_pos_x), i32(ui.start_position.y), ui.radius+ui.outline_thickness, rl.BLACK)
       rl.DrawCircle(i32(circle_pos_x), i32(ui.start_position.y), ui.radius, colors[i].color)
     }
 
     if selecting_color {
-      rl.GuiColorPicker(rl.Rectangle{100, 200, 75, 75}, "picker", &colors[color_select_index].color)
+      rl.GuiColorPicker(
+        rl.Rectangle{
+          min_max_normalization(
+            colors[color_select_index].height_value,
+            ui.start_position.x,
+            ui.end_position.x,
+            -10,
+            10
+          ) - 75/2,
+          ui.start_position.y + ui.radius + ui.outline_thickness + 5,
+          75,
+          75
+        },
+        "picker",
+        &colors[color_select_index].color
+      )
     }
     if hovering_new_color {
       rl.DrawCircleLinesV(rl.Vector2{rl.GetMousePosition().x, ui.start_position.y}, ui.radius, rl.GRAY)
@@ -302,8 +316,8 @@ worker :: proc(t: thread.Task) {
     for y in y_start..<y_end {
       i := (y * world.width_tiles + x)
       current_tile := data.heightmap_data[i]
-      terrain.recalculate_tile(world^, &data.heightmap_data[i], octaves_check, noise.Vec2{f64(x), f64(y)})
-      color := terrain.noise_to_color_lerp(colors, data.heightmap_data[i])
+      recalculate_tile(world^, &data.heightmap_data[i], octaves_check, noise.Vec2{f64(x), f64(y)})
+      color := noise_to_color_lerp(colors, data.heightmap_data[i])
       data.pixel_data[i] = color
     }
   }
@@ -311,15 +325,15 @@ worker :: proc(t: thread.Task) {
 
 Worker_Data :: struct {
   heightmap_data: []f32,
-  color_data: []terrain.World_Color,
+  color_data: []World_Color,
   pixel_data: []rl.Color,
-  world_data: ^terrain.World,
+  world_data: ^World,
 }
 
 gui_custom_slider :: proc(text: string, bounding_box: rl.Rectangle, color: rl.Color, slider_outline: f32, font: rl.Font, font_size: f32, value: ^$T, min: T, max: T) where intrinsics.type_is_float(T) {
-  @static holding_slider: bool
+  @static holding_slider: rawptr
 
-  slider_position := terrain.min_max_normalization(value^, T(bounding_box.x), T(bounding_box.x + bounding_box.width), min, max)
+  slider_position := min_max_normalization(value^, T(bounding_box.x), T(bounding_box.x + bounding_box.width), min, max)
 
   slider_rectangle := rl.Rectangle{
     f32(slider_position) - slider_outline,
@@ -330,17 +344,15 @@ gui_custom_slider :: proc(text: string, bounding_box: rl.Rectangle, color: rl.Co
 
   if rl.CheckCollisionPointRec(rl.GetMousePosition(), slider_rectangle) {
     if rl.IsMouseButtonDown(rl.MouseButton.LEFT){
-      holding_slider = true
+      holding_slider = value
     }
   }
-  else {
-  }
-  if holding_slider == true && !rl.IsMouseButtonDown(rl.MouseButton.LEFT) {
-    holding_slider = false
+  if !rl.IsMouseButtonDown(rl.MouseButton.LEFT) {
+    holding_slider = nil
   }
 
-  if holding_slider { // FIX: variables with the same type linked in value
-    value^ = math.clamp(terrain.min_max_normalization(
+  if holding_slider == value {
+    value^ = math.clamp(min_max_normalization(
       T(rl.GetMousePosition().x - (bounding_box.height + slider_outline)/2),
       min,
       max,
