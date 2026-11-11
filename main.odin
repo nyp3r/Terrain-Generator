@@ -106,6 +106,9 @@ main :: proc() {
   selecting_color := false
   color_select_index: int
   hovering_new_color := false
+  color_cpy: rl.Color
+
+  octaves_f32: f32
 
   ui := UI {
     radius = 10,
@@ -125,7 +128,7 @@ main :: proc() {
 
   // TODO:
   // * UI for changing algorithm values
-  //
+
   // TODO: future ideas
   // * additional simplex noise for ores or similar
 
@@ -246,33 +249,44 @@ main :: proc() {
     }
 
     if selecting_color {
+      position := rl.Vector2{
+        min_max_normalization(
+          colors[color_select_index].height_value,
+          ui.start_position.x,
+          ui.end_position.x,
+          -10,
+          10
+        ) - 75/2,
+        ui.start_position.y + ui.radius + ui.outline_thickness + 5,
+      }
+
       rl.GuiColorPicker(
-        rl.Rectangle{
-          min_max_normalization(
-            colors[color_select_index].height_value,
-            ui.start_position.x,
-            ui.end_position.x,
-            -10,
-            10
-          ) - 75/2,
-          ui.start_position.y + ui.radius + ui.outline_thickness + 5,
-          75,
-          75
-        },
+        rl.Rectangle{position.x, position.y, 75, 75},
         "picker",
         &colors[color_select_index].color
       )
+
+      if rl.GuiButton(rl.Rectangle{position.x, position.y + 75, 75/2, 20}, "Copy") {
+        color_cpy = colors[color_select_index].color
+      }
+      else if rl.GuiButton(rl.Rectangle{position.x + 75/2,  position.y + 75, 75/2, 20}, "Paste") {
+        colors[color_select_index].color = color_cpy
+      }
     }
     if hovering_new_color {
       rl.DrawCircleLinesV(rl.Vector2{rl.GetMousePosition().x, ui.start_position.y}, ui.radius, rl.GRAY)
     }
 
     // frequency and lacunarity sliders linked?
-    gui_custom_slider("frequency", rl.Rectangle{100, 250, 200, 15}, rl.ORANGE, 2, font, f32(font_size), &world.frequency, 0, 0.005)
-    gui_custom_slider("lacunarity", rl.Rectangle{100, 300, 200, 15}, rl.ORANGE, 2, font, f32(font_size), &world.lacunarity, 0, 5)
+    octaves_f32 = f32(world.octaves)
+    gui_custom_slider("octaves", rl.Rectangle{100, 200, 200, 15}, rl.ORANGE, 2, font, f32(font_size), &octaves_f32, 0, 5, 1)
+    world.octaves = int(octaves_f32)
 
-    gui_custom_slider("persistence", rl.Rectangle{100, 350, 200, 15}, rl.ORANGE, 2, font, f32(font_size), &world.persistence, 0, 5)
-    gui_custom_slider("amplitude", rl.Rectangle{100, 400, 200, 15}, rl.ORANGE, 2, font, f32(font_size), &world.amplitude, 0, 5)
+    gui_custom_slider("frequency", rl.Rectangle{100, 250, 200, 15}, rl.ORANGE, 2, font, f32(font_size), &world.frequency, 0, 0.005, 0.0002)
+    gui_custom_slider("lacunarity", rl.Rectangle{100, 300, 200, 15}, rl.ORANGE, 2, font, f32(font_size), &world.lacunarity, 0, 5, 0.1)
+
+    gui_custom_slider("persistence", rl.Rectangle{100, 350, 200, 15}, rl.ORANGE, 2, font, f32(font_size), &world.persistence, 0, 5, 0.1)
+    gui_custom_slider("amplitude", rl.Rectangle{100, 400, 200, 15}, rl.ORANGE, 2, font, f32(font_size), &world.amplitude, 0, 5, 0.1)
 
     apply_mid_x := (ui.end_position.x - ui.start_position.x)/2 + ui.start_position.x - ui.width/2
     apply_mid_y := ui.start_position.y/2 - ui.height/2 - ui.radius/2
@@ -330,7 +344,18 @@ Worker_Data :: struct {
   world_data: ^World,
 }
 
-gui_custom_slider :: proc(text: string, bounding_box: rl.Rectangle, color: rl.Color, slider_outline: f32, font: rl.Font, font_size: f32, value: ^$T, min: T, max: T) where intrinsics.type_is_float(T) {
+gui_custom_slider :: proc(
+  text: string,
+  bounding_box: rl.Rectangle,
+  color: rl.Color,
+  slider_outline: f32,
+  font: rl.Font,
+  font_size: f32,
+  value: ^$T,
+  min: T,
+  max: T,
+  step_size: T
+) where intrinsics.type_is_float(T) {
   @static holding_slider: rawptr
 
   slider_position := min_max_normalization(value^, T(bounding_box.x), T(bounding_box.x + bounding_box.width), min, max)
@@ -352,6 +377,7 @@ gui_custom_slider :: proc(text: string, bounding_box: rl.Rectangle, color: rl.Co
   }
 
   if holding_slider == value {
+    value_before := value^
     value^ = math.clamp(min_max_normalization(
       T(rl.GetMousePosition().x - (bounding_box.height + slider_outline)/2),
       min,
@@ -359,6 +385,9 @@ gui_custom_slider :: proc(text: string, bounding_box: rl.Rectangle, color: rl.Co
       T(bounding_box.x),
       T(bounding_box.x + bounding_box.width),
     ), min, max)
+    if math.abs(value_before - value^) < step_size {
+      value^ = step_size + value_before
+    }
   }
 
   rl.DrawLineV(
