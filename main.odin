@@ -279,14 +279,14 @@ main :: proc() {
 
     // frequency and lacunarity sliders linked?
     octaves_f32 = f32(world.octaves)
-    gui_custom_slider("octaves", rl.Rectangle{100, 200, 200, 15}, rl.ORANGE, 2, font, f32(font_size), &octaves_f32, 0, 5, 1)
+    gui_custom_slider("octaves", rl.Rectangle{100, 200, 200, 15}, rl.ORANGE, 2, font, f32(font_size), &octaves_f32, 0, 5, 1, 0)
     world.octaves = int(octaves_f32)
 
-    gui_custom_slider("frequency", rl.Rectangle{100, 250, 200, 15}, rl.ORANGE, 2, font, f32(font_size), &world.frequency, 0, 0.005, 0.0002)
-    gui_custom_slider("lacunarity", rl.Rectangle{100, 300, 200, 15}, rl.ORANGE, 2, font, f32(font_size), &world.lacunarity, 0, 5, 0.1)
+    gui_custom_slider("frequency", rl.Rectangle{100, 250, 200, 15}, rl.ORANGE, 2, font, f32(font_size), &world.frequency, 0, 0.005, 0.0002, 4)
+    gui_custom_slider("lacunarity", rl.Rectangle{100, 300, 200, 15}, rl.ORANGE, 2, font, f32(font_size), &world.lacunarity, 0, 5, 0.1, 1)
 
-    gui_custom_slider("persistence", rl.Rectangle{100, 350, 200, 15}, rl.ORANGE, 2, font, f32(font_size), &world.persistence, 0, 5, 0.1)
-    gui_custom_slider("amplitude", rl.Rectangle{100, 400, 200, 15}, rl.ORANGE, 2, font, f32(font_size), &world.amplitude, 0, 5, 0.1)
+    gui_custom_slider("persistence", rl.Rectangle{100, 350, 200, 15}, rl.ORANGE, 2, font, f32(font_size), &world.persistence, 0, 5, 0.1, 1)
+    gui_custom_slider("amplitude", rl.Rectangle{100, 400, 200, 15}, rl.ORANGE, 2, font, f32(font_size), &world.amplitude, 0, 5, 0.1, 1)
 
     apply_mid_x := (ui.end_position.x - ui.start_position.x)/2 + ui.start_position.x - ui.width/2
     apply_mid_y := ui.start_position.y/2 - ui.height/2 - ui.radius/2
@@ -354,11 +354,12 @@ gui_custom_slider :: proc(
   value: ^$T,
   min: T,
   max: T,
-  step_size: T
+  step_size: T,
+  decimal_places: int,
 ) where intrinsics.type_is_float(T) {
   @static holding_slider: rawptr
 
-  slider_position := min_max_normalization(value^, T(bounding_box.x), T(bounding_box.x + bounding_box.width), min, max)
+  slider_position := min_max_normalization(value^, T(bounding_box.x - bounding_box.height/2), T(bounding_box.x + bounding_box.width - bounding_box.height/2), min, max)
 
   slider_rectangle := rl.Rectangle{
     f32(slider_position) - slider_outline,
@@ -377,16 +378,19 @@ gui_custom_slider :: proc(
   }
 
   if holding_slider == value {
-    value_before := value^
-    value^ = math.clamp(min_max_normalization(
+    new_value := math.clamp(min_max_normalization(
       T(rl.GetMousePosition().x - (bounding_box.height + slider_outline)/2),
       min,
       max,
       T(bounding_box.x),
       T(bounding_box.x + bounding_box.width),
     ), min, max)
-    if math.abs(value_before - value^) < step_size {
-      value^ = step_size + value_before
+    if new_value - value^ >= step_size {
+      // multiplying to instantly set it to the correct value
+      value^ += step_size * ((new_value - value^)/step_size)
+    }
+    else if value^ - new_value >= step_size {
+      value^ -= step_size * ((value^ - new_value)/step_size)
     }
   }
 
@@ -406,9 +410,10 @@ gui_custom_slider :: proc(
     color
   )
 
+  decimal_formatting := fmt.aprintf("%%.%df", decimal_places)
   rl.DrawTextEx(
     font,
-    fmt.caprintf("%.5f", value^),
+    fmt.caprintf(decimal_formatting, value^),
     rl.Vector2{bounding_box.x + bounding_box.width/2, bounding_box.y - bounding_box.height*1.25},
     font_size,
     0,
