@@ -76,7 +76,7 @@ populate_heightmap :: proc(world: World, heightmap: ^[]f32) {
 recalculate_tile :: proc(world: World, tile: ^f32, octaves_check: f32, coordinate: noise.Vec2) {
   tile^ = noise.noise_2d(world.seed, coordinate * world.frequency)
 
-  for oct := 2; f32(oct) < octaves_check; oct *= 2 {
+  for oct := 1; f32(oct) < octaves_check; oct *= 2 {
     tile^ += (noise.noise_2d(world.seed,
       coordinate *
       world.frequency *
