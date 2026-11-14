@@ -10,7 +10,7 @@ import "core:thread"
 import "core:strings"
 import "core:strconv"
 
-WORKER_THREADS :: 20
+WORKER_THREADS :: 16
 
 UI_ :: struct {
   // "color circles"
@@ -86,21 +86,12 @@ main :: proc() {
 
   // ------------------------------------------------------------------------
   pixels_len := world.width_tiles *world.height_tiles
-  alloc_size := int(pixels_len * size_of(rl.Color))
-  pixels_ptr, err := mem.alloc(alloc_size)
-  defer mem.free(pixels_ptr)
+  pixels_ptr, err := make([^]rl.Color, pixels_len)
+  pixels := slice.from_ptr(([^]rl.Color)(pixels_ptr), pixels_len)
+  defer free(pixels_ptr)
   if err != mem.Allocator_Error.None {
     fmt.println(err)
     panic("pixels allocation error")
-  }
-  pixels := slice.from_ptr(([^]rl.Color)(pixels_ptr), pixels_len)
-
-  for x in 0..<world.width_tiles {
-    for y in 0..<world.height_tiles {
-      i := (y * world.width_tiles + x)
-      color := noise_to_color_lerp(colors[:], heightmap[i])
-      pixels[i] = color
-    }
   }
 
   img := rl.Image {
@@ -111,15 +102,34 @@ main :: proc() {
     format = rl.PixelFormat.UNCOMPRESSED_R8G8B8A8,
   }
   texture := rl.LoadTextureFromImage(img)
-  // ------------------------------------------------------------------------
 
   // for the thread pool
   data := Worker_Data{
     world_data = &world,
     heightmap_data = heightmap,
     pixel_data = pixels,
-    color_data = colors[:],
+    color_data = &colors,
   }
+
+  reload_image :: proc(img: rl.Image, texture: ^rl.Texture, data: ^Worker_Data) {
+    thread_pool: thread.Pool
+    thread.pool_init(&thread_pool, context.allocator, WORKER_THREADS)
+
+    for i in 0..<WORKER_THREADS {
+      thread.pool_add_task(&thread_pool, context.allocator, worker, data, i)
+    }
+
+    thread.pool_start(&thread_pool)
+    thread.pool_finish(&thread_pool)
+
+    rl.UnloadTexture(texture^)
+    texture^ = rl.LoadTextureFromImage(img)
+    thread.pool_destroy(&thread_pool)
+  }
+
+  reload_image(img, &texture, &data)
+  // ------------------------------------------------------------------------
+
 
   rl.SetTargetFPS(165)
 
@@ -199,6 +209,39 @@ main :: proc() {
     delta = rl.GetTime() - last_time
     last_time = rl.GetTime()
 
+    if rl.IsWindowResized() {
+      world.height_tiles = int(rl.GetScreenHeight()) / world.tile_size
+      world.width_tiles = int(rl.GetScreenWidth()) / world.tile_size
+      heightmap = make_heightmap(world.width_tiles, world.height_tiles)
+
+      pixels_len = world.width_tiles * world.height_tiles
+      free(pixels_ptr)
+      pixels_ptr, err = make([^]rl.Color, pixels_len)
+      if err != mem.Allocator_Error.None {
+        fmt.println(err)
+        panic("pixels allocation error")
+      }
+      pixels = slice.from_ptr(([^]rl.Color)(pixels_ptr), pixels_len)
+
+      img = rl.Image {
+        data = pixels_ptr,
+        width = i32(world.width_tiles) * i32(world.tile_size),
+        height = i32(world.height_tiles) * i32(world.tile_size),
+        mipmaps = 1,
+        format = rl.PixelFormat.UNCOMPRESSED_R8G8B8A8,
+      }
+
+      // for the thread pool
+      data = Worker_Data{
+        world_data = &world,
+        heightmap_data = heightmap,
+        pixel_data = pixels,
+        color_data = &colors,
+      }
+
+      reload_image(img, &texture, &data)
+    }
+
     if rl.IsKeyPressed(rl.KeyboardKey.Q) {
       rl.CloseWindow()
     }
@@ -220,7 +263,7 @@ main :: proc() {
       rl.Color{0, 0, 0, 100}
     )
 
-    gui_colors_slider(colors_ui, &colors, 75)
+    gui_colors_slider(colors_ui, &colors, 75) // FIX: can't change hue
 
     gui_number_input(rl.Vector2{ui.algorithm_values_rec.x, ui.algorithm_values_rec.y}, 200, font, "seed", &world.seed)
 
@@ -278,20 +321,8 @@ main :: proc() {
 
     apply_mid_x := (ui.colors_end_pos.x - ui.colors_start_pos.x)/2 + ui.colors_start_pos.x - ui.apply_width/2
     apply_mid_y := ui.colors_start_pos.y/2 - ui.apply_height/2 - ui.color_slider_radius/2
-    if rl.GuiButton(rl.Rectangle{apply_mid_x, apply_mid_y, ui.apply_width, ui.apply_height}, "apply") || rl.IsKeyPressed(rl.KeyboardKey.KP_ENTER) {
-      thread_pool: thread.Pool
-      thread.pool_init(&thread_pool, context.allocator, WORKER_THREADS)
-
-      for i in 0..<WORKER_THREADS {
-        thread.pool_add_task(&thread_pool, context.allocator, worker, &data, i)
-      }
-
-      thread.pool_start(&thread_pool)
-      thread.pool_finish(&thread_pool)
-
-      rl.UnloadTexture(texture)
-      texture = rl.LoadTextureFromImage(img)
-      thread.pool_destroy(&thread_pool)
+    if rl.GuiButton(rl.Rectangle{apply_mid_x, apply_mid_y, ui.apply_width, ui.apply_height}, "apply") || rl.IsKeyPressed(rl.KeyboardKey.KP_ENTER) || rl.IsKeyPressed(rl.KeyboardKey.ENTER) {
+      reload_image(img, &texture, &data)
     }
 
     rl.DrawFPS(0, 0)
@@ -311,15 +342,17 @@ worker :: proc(t: thread.Task) {
   per_task := world.height_tiles / WORKER_THREADS
   y_start := t.user_index*per_task
   y_end := (t.user_index+1)*per_task
+  if t.user_index+1 == WORKER_THREADS {
+    y_end = world.height_tiles
+  }
 
   octaves_check := math.pow(2, f32(data.world_data.octaves))
 
   for x in 0..<world.width_tiles {
     for y in y_start..<y_end {
       i := (y * world.width_tiles + x)
-      current_tile := data.heightmap_data[i]
       recalculate_tile(world^, &data.heightmap_data[i], octaves_check, {f64(x), f64(y)})
-      color := noise_to_color_lerp(colors, data.heightmap_data[i])
+      color := noise_to_color_lerp(colors[:], data.heightmap_data[i])
       data.pixel_data[i] = color
     }
   }
@@ -327,7 +360,7 @@ worker :: proc(t: thread.Task) {
 
 Worker_Data :: struct {
   heightmap_data: []f32,
-  color_data: []World_Color,
+  color_data: ^[dynamic]World_Color,
   pixel_data: []rl.Color,
   world_data: ^World,
 }
@@ -478,8 +511,10 @@ gui_colors_slider :: proc(ui: UI_Element, colors: ^[dynamic]World_Color, color_p
   @static selecting_color := false
   @static interacted_circle_index := 0
   @static color_picker_pos: rl.Vector2
+  @static copied_color: rl.Color
   mouse_position := rl.GetMousePosition()
   ui_rectangle := rl.Rectangle{ui.position.x, ui.position.y, ui.size.x, ui.size.y}
+  color_picker_btn_height := color_picker_size/4
 
   if rl.CheckCollisionPointRec(mouse_position, ui_rectangle) {
 
@@ -494,7 +529,6 @@ gui_colors_slider :: proc(ui: UI_Element, colors: ^[dynamic]World_Color, color_p
           // start holding color
           is_holding_circle = true
           interacted_circle_index = i
-          fmt.println(i)
         }
         else if rl.IsMouseButtonPressed(rl.MouseButton.RIGHT) && rl.IsKeyDown(rl.KeyboardKey.LEFT_SHIFT) {
           // remove color on shift + right click
@@ -578,9 +612,12 @@ gui_colors_slider :: proc(ui: UI_Element, colors: ^[dynamic]World_Color, color_p
     }
   }
 
-  if (rl.IsMouseButtonPressed(rl.MouseButton.LEFT) || rl.IsMouseButtonPressed(rl.MouseButton.RIGHT)) &&
-  !rl.CheckCollisionPointRec(rl.GetMousePosition(), {color_picker_pos.x, color_picker_pos.y, color_picker_size, color_picker_size}) {
-    selecting_color = false
+  if (rl.IsMouseButtonPressed(rl.MouseButton.LEFT) || rl.IsMouseButtonPressed(rl.MouseButton.RIGHT)) {
+    huebar_width := f32(rl.GuiGetStyle(rl.GuiControl.COLORPICKER, i32(rl.GuiColorPickerProperty.HUEBAR_WIDTH)))
+    huebar_padding :=  f32(rl.GuiGetStyle(rl.GuiControl.COLORPICKER, i32(rl.GuiColorPickerProperty.HUEBAR_PADDING)))
+    if !rl.CheckCollisionPointRec(rl.GetMousePosition(), {color_picker_pos.x, color_picker_pos.y, color_picker_size + huebar_width + huebar_padding, color_picker_size + color_picker_btn_height}) {
+      selecting_color = false
+    }
   }
 
   // draw
@@ -623,5 +660,25 @@ gui_colors_slider :: proc(ui: UI_Element, colors: ^[dynamic]World_Color, color_p
       "",
       &colors[interacted_circle_index].color
     )
+
+    if rl.GuiButton(
+      {
+        color_picker_pos.x,
+        color_picker_pos.y + color_picker_size,
+        color_picker_size/2,
+        color_picker_size/4,
+      },
+      "copy"
+    ){copied_color = colors[interacted_circle_index].color}
+
+    if rl.GuiButton(
+      {
+        color_picker_pos.x + color_picker_size/2,
+        color_picker_pos.y + color_picker_size,
+        color_picker_size/2,
+        color_picker_size/4,
+      },
+      "paste"
+    ){colors[interacted_circle_index].color = copied_color}
   }
 }
