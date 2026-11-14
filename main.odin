@@ -6,12 +6,11 @@ import "core:mem"
 import "core:fmt"
 import rl "vendor:raylib"
 import "core:math"
-import "core:math/noise"
 import "core:thread"
 import "core:strings"
 import "core:strconv"
 
-WORKER_THREADS :: 8
+WORKER_THREADS :: 20
 
 UI_ :: struct {
   // "color circles"
@@ -35,7 +34,7 @@ UI_ :: struct {
   algorithm_values_spacing: f32,
 }
 
-UI_Group :: struct {
+UI_Element :: struct {
   // basic
   position: rl.Vector2,
   size: rl.Vector2,
@@ -45,7 +44,9 @@ UI_Group :: struct {
   spacing: f32,
   outline_thickness: f32,
   outline_color: rl.Color,
+
   font: rl.Font,
+  children: []UI_Element,
 
   // extra
   line_color: rl.Color,
@@ -77,6 +78,7 @@ main :: proc() {
   append(&colors, World_Color{-10, rl.DARKBLUE})
   append(&colors, World_Color{-99999, rl.DARKBLUE})
 
+  rl.SetConfigFlags(rl.ConfigFlags{rl.ConfigFlag.WINDOW_RESIZABLE})
   rl.InitWindow(i32(world.width_tiles*world.tile_size), i32(world.height_tiles*world.tile_size), "Raylib")
 
   heightmap := make_heightmap(world.width_tiles, world.height_tiles)
@@ -175,7 +177,7 @@ main :: proc() {
   font := rl.LoadFontEx("/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Bold.ttf", font_size, code_points, code_point_count)
   defer rl.UnloadFont(font)
 
-  colors_ui := UI_Group {
+  colors_ui := UI_Element {
     position = {100,600},
     size = {f32(world.width_tiles - 200), 20},
     outline_thickness = 1,
@@ -201,113 +203,10 @@ main :: proc() {
       rl.CloseWindow()
     }
 
-    // Picking colors
-    if (rl.IsMouseButtonPressed(rl.MouseButton.LEFT) || rl.IsMouseButtonPressed(rl.MouseButton.RIGHT)) && !rl.CheckCollisionPointRec(rl.GetMousePosition(), color_picker_rec) {
-      selecting_color = false
-    }
-
-    if rl.GetMousePosition().y < ui.colors_start_pos.y + ui.color_slider_radius + ui.color_slider_outline_thickness && rl.GetMousePosition().y > ui.colors_start_pos.y || 
-    rl.GetMousePosition().y > ui.colors_start_pos.y - ui.color_slider_radius - ui.color_slider_outline_thickness && rl.GetMousePosition().y < ui.colors_start_pos.y {
-      hovering_new_color = true
-
-      height_value: for i in 0..<len(colors) {
-        circle_pos_x := min_max_normalization(colors[i].height_value, ui.colors_start_pos.x, ui.colors_end_pos.x, -10, 10)
-
-        if rl.CheckCollisionPointCircle(
-          rl.GetMousePosition(),
-          rl.Vector2{circle_pos_x, ui.colors_start_pos.y},
-          ui.color_slider_radius + ui.color_slider_outline_thickness
-        ) {
-          // hovering color
-
-          // can't create new color when hovering existing color
-          hovering_new_color = false
-
-          if !is_holding_color &&
-          rl.IsMouseButtonDown(rl.MouseButton.LEFT) {
-            // start holding color
-            is_holding_color = true
-            holding_slider_index = i
-          }
-          else if rl.IsMouseButtonPressed(rl.MouseButton.RIGHT) && rl.IsKeyDown(rl.KeyboardKey.LEFT_SHIFT) {
-            // remove color on shift + right click
-            ordered_remove(&colors, i)
-          }
-          else if rl.IsMouseButtonDown(rl.MouseButton.RIGHT) {
-            // change color on right click
-            selecting_color = true
-            color_picker_pos = rl.Vector2{
-              min_max_normalization(
-                colors[color_select_index].height_value,
-                ui.colors_start_pos.x,
-                ui.colors_end_pos.x,
-                -10,
-                10
-              ) - 75/2,
-              ui.colors_start_pos.y + ui.color_slider_radius + ui.color_slider_outline_thickness + 5,
-            }
-            color_picker_rec = {color_picker_pos.x, color_picker_pos.y, color_picker_rec.width, color_picker_rec.height}
-            color_select_index = i
-          }
-        }
-      }
-    }
-    else do hovering_new_color = false
-
-    if rl.IsMouseButtonDown(rl.MouseButton.LEFT) {
-      // Dragging colors
-      if is_holding_color {
-        colors[holding_slider_index].height_value = math.clamp(min_max_normalization(rl.GetMousePosition().x, -10, 10, ui.colors_start_pos.x, ui.colors_end_pos.x), -10, 10)
-        if colors[holding_slider_index].height_value > colors[holding_slider_index-1].height_value {
-          slice.swap(colors[:], holding_slider_index, holding_slider_index-1)
-          holding_slider_index -= 1
-          color_select_index -= 1
-        }
-        else if colors[holding_slider_index].height_value < colors[holding_slider_index+1].height_value {
-          slice.swap(colors[:], holding_slider_index, holding_slider_index+1)
-          holding_slider_index += 1
-          color_select_index += 1
-        }
-      }
-    }
-    else do is_holding_color = false
-
-    if hovering_new_color && rl.IsMouseButtonPressed(rl.MouseButton.LEFT) {
-      new_height_value := min_max_normalization(rl.GetMousePosition().x, -10, 10, ui.colors_start_pos.x, ui.colors_end_pos.x)
-      new_color := World_Color {
-        height_value = new_height_value,
-        color = rl.RED
-      }
-
-      append(&colors, new_color)
-
-      new_color_index := len(colors) - 1
-      outer: for i := new_color_index; i > 0; i -= 1 {
-        if new_color.height_value < colors[i].height_value {
-          slice.swap(colors[:], i, new_color_index)
-          new_color_index -= 1
-        }
-        else {
-          break outer
-        }
-      }
-    }
-
     // Draw:
     rl.BeginDrawing()
     rl.ClearBackground(rl.WHITE)
     rl.DrawTexture(texture, 0, 0, rl.WHITE)
-
-    rl.DrawLineV(ui.colors_start_pos, ui.colors_end_pos, ui.line_color)
-    for i in 0..<len(colors) {
-      circle_pos_x := min_max_normalization(colors[i].height_value, ui.colors_start_pos.x, ui.colors_end_pos.x, -10, 10)
-      rl.DrawCircle(i32(circle_pos_x), i32(ui.colors_start_pos.y), ui.color_slider_radius+ui.color_slider_outline_thickness, rl.BLACK)
-      rl.DrawCircle(i32(circle_pos_x), i32(ui.colors_start_pos.y), ui.color_slider_radius, colors[i].color)
-    }
-
-    if hovering_new_color {
-      rl.DrawCircleLinesV(rl.Vector2{rl.GetMousePosition().x, ui.colors_start_pos.y}, ui.color_slider_radius, rl.GRAY)
-    }
 
     rl.DrawRectangleV(
       rl.Vector2{
@@ -366,7 +265,8 @@ main :: proc() {
       },
       rl.ORANGE, ui.line_color, 2, font, f32(font_size), &world.persistence, 0, 5, 0.1, 1
     )
-    gui_custom_slider("amplitude",
+    gui_custom_slider(
+      "amplitude",
       rl.Rectangle{
         100,
         400,
@@ -394,22 +294,6 @@ main :: proc() {
       thread.pool_destroy(&thread_pool)
     }
 
-    if selecting_color {
-
-      rl.GuiColorPicker(
-        color_picker_rec,
-        "picker",
-        &colors[color_select_index].color
-      )
-
-      if rl.GuiButton(rl.Rectangle{color_picker_pos.x, color_picker_pos.y + 75, 75/2, 20}, "Copy") {
-        color_cpy = colors[color_select_index].color
-      }
-      else if rl.GuiButton(rl.Rectangle{color_picker_pos.x + 75/2,  color_picker_pos.y + 75, 75/2, 20}, "Paste") {
-        colors[color_select_index].color = color_cpy
-      }
-    }
-
     rl.DrawFPS(0, 0)
     rl.EndDrawing()
   }
@@ -434,7 +318,7 @@ worker :: proc(t: thread.Task) {
     for y in y_start..<y_end {
       i := (y * world.width_tiles + x)
       current_tile := data.heightmap_data[i]
-      recalculate_tile(world^, &data.heightmap_data[i], octaves_check, noise.Vec2{f64(x), f64(y)})
+      recalculate_tile(world^, &data.heightmap_data[i], octaves_check, {f64(x), f64(y)})
       color := noise_to_color_lerp(colors, data.heightmap_data[i])
       data.pixel_data[i] = color
     }
@@ -584,7 +468,7 @@ gui_number_input :: proc(
   rl.DrawTextEx(font, text, rl.Vector2{position.x, position.y - text_box.height}, f32(font.baseSize), 0, rl.WHITE)
 }
 
-gui_colors_slider :: proc(ui: UI_Group, colors: ^[dynamic]World_Color, color_picker_size: f32) {
+gui_colors_slider :: proc(ui: UI_Element, colors: ^[dynamic]World_Color, color_picker_size: f32) {
   line_y := ui.position.y + ui.size.y/2
   circle_radius := ui.size.y/2
   line_start := rl.Vector2{ui.position.x + ui.padding + circle_radius, line_y}
@@ -595,38 +479,42 @@ gui_colors_slider :: proc(ui: UI_Group, colors: ^[dynamic]World_Color, color_pic
   @static interacted_circle_index := 0
   @static color_picker_pos: rl.Vector2
   mouse_position := rl.GetMousePosition()
+  ui_rectangle := rl.Rectangle{ui.position.x, ui.position.y, ui.size.x, ui.size.y}
 
-  if rl.CheckCollisionPointRec(mouse_position, {ui.position.x, ui.position.y, ui.size.x, ui.size.y}) {
+  if rl.CheckCollisionPointRec(mouse_position, ui_rectangle) {
 
-    for i in 0..<len(colors){
+    for i in 0..<len(colors^){
       color_pos_x := min_max_normalization(colors[i].height_value, line_start.x, line_end.x, -10, 10)
       
       if rl.CheckCollisionPointCircle(mouse_position, {color_pos_x, line_y}, circle_radius) {
         hovering_circle = true
-      }
-      if !is_holding_circle &&
-      rl.IsMouseButtonDown(rl.MouseButton.LEFT) {
-        // start holding color
-        is_holding_circle = true
-        interacted_circle_index = i
-      }
-      else if rl.IsMouseButtonPressed(rl.MouseButton.RIGHT) && rl.IsKeyDown(rl.KeyboardKey.LEFT_SHIFT) {
-        // remove color on shift + right click
-        ordered_remove(colors, i)
-      }
-      else if rl.IsMouseButtonDown(rl.MouseButton.RIGHT) {
-        // change color on right click
 
-        selecting_color = true
-        color_picker_pos = rl.Vector2{
-          min_max_normalization(
-            colors[interacted_circle_index].height_value,
-            line_start.x,
-            line_end.x,
-            -10,
-            10
-          ) - color_picker_size/2,
-          line_y + circle_radius + 5,
+        if !is_holding_circle &&
+        rl.IsMouseButtonDown(rl.MouseButton.LEFT) {
+          // start holding color
+          is_holding_circle = true
+          interacted_circle_index = i
+          fmt.println(i)
+        }
+        else if rl.IsMouseButtonPressed(rl.MouseButton.RIGHT) && rl.IsKeyDown(rl.KeyboardKey.LEFT_SHIFT) {
+          // remove color on shift + right click
+          ordered_remove(colors, i)
+        }
+        else if rl.IsMouseButtonDown(rl.MouseButton.RIGHT) {
+          // change color on right click
+
+          interacted_circle_index = i
+          selecting_color = true
+          color_picker_pos = rl.Vector2{
+            min_max_normalization(
+              colors[interacted_circle_index].height_value,
+              line_start.x,
+              line_end.x,
+              -10,
+              10
+            ) - color_picker_size/2,
+            line_y + circle_radius + 5,
+          }
         }
       }
     }
@@ -660,23 +548,27 @@ gui_colors_slider :: proc(ui: UI_Group, colors: ^[dynamic]World_Color, color_pic
   }
   else do is_holding_circle = false
 
-  // TODO: finish this
-  if !hovering_circle && rl.IsMouseButtonPressed(rl.MouseButton.LEFT) {
+  // new circle
+  if !hovering_circle &&
+  rl.IsMouseButtonPressed(rl.MouseButton.LEFT) &&
+  rl.CheckCollisionPointRec(mouse_position, ui_rectangle) {
     new_height_value := min_max_normalization(rl.GetMousePosition().x,
       -10,
       10,
-      ui.colors_start_pos.x,
-      ui.colors_end_pos.x)
-    new_color := World_Color {
+      line_start.x,
+      line_end.x
+    )
+
+    new_circle := World_Color {
       height_value = new_height_value,
       color = rl.RED
     }
 
-    append(colors, new_color)
+    append(colors, new_circle)
 
     new_color_index := len(colors) - 1
     outer: for i := new_color_index; i > 0; i -= 1 {
-      if new_color.height_value < colors[i].height_value {
+      if new_circle.height_value < colors[i].height_value {
         slice.swap(colors[:], i, new_color_index)
         new_color_index -= 1
       }
@@ -684,6 +576,11 @@ gui_colors_slider :: proc(ui: UI_Group, colors: ^[dynamic]World_Color, color_pic
         break outer
       }
     }
+  }
+
+  if (rl.IsMouseButtonPressed(rl.MouseButton.LEFT) || rl.IsMouseButtonPressed(rl.MouseButton.RIGHT)) &&
+  !rl.CheckCollisionPointRec(rl.GetMousePosition(), {color_picker_pos.x, color_picker_pos.y, color_picker_size, color_picker_size}) {
+    selecting_color = false
   }
 
   // draw
@@ -708,6 +605,23 @@ gui_colors_slider :: proc(ui: UI_Group, colors: ^[dynamic]World_Color, color_pic
       },
       ui.size.y/2 - ui.outline_thickness*2 - ui.padding*2,
       color.color,
+    )
+  }
+  if !hovering_circle && rl.CheckCollisionPointRec(mouse_position, ui_rectangle) {
+    rl.DrawCircleLinesV(rl.Vector2{rl.GetMousePosition().x, line_y}, circle_radius, rl.GRAY)
+  }
+
+
+  if selecting_color {
+    rl.GuiColorPicker(
+      {
+        color_picker_pos.x,
+        color_picker_pos.y,
+        color_picker_size,
+        color_picker_size
+      },
+      "",
+      &colors[interacted_circle_index].color
     )
   }
 }
