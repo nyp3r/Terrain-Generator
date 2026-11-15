@@ -142,6 +142,7 @@ main :: proc() {
   color_cpy: rl.Color
   color_picker_pos: rl.Vector2
   color_picker_rec := rl.Rectangle{color_picker_pos.x, color_picker_pos.y, 75, 75}
+  reload_image_on_resize := true
 
   octaves_f32: f32
 
@@ -157,7 +158,7 @@ main :: proc() {
 
     line_color = rl.LIGHTGRAY,
 
-    algorithm_values_rec = rl.Rectangle{100, 150, 225, 310},
+    algorithm_values_rec = rl.Rectangle{100, 250, 225, 310},
     algorithm_values_margin = 25,
     algorithm_values_spacing = 50,
   }
@@ -182,13 +183,14 @@ main :: proc() {
   defer rl.UnloadFont(apply_font)
 
   rl.GuiSetFont(apply_font)
+  rl.GuiSetStyle(rl.GuiControl.DEFAULT, i32(rl.GuiDefaultProperty.TEXT_SIZE), apply_font.baseSize)
 
   font_size := i32(18)
   font := rl.LoadFontEx("/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Bold.ttf", font_size, code_points, code_point_count)
   defer rl.UnloadFont(font)
 
   colors_ui := UI_Element {
-    position = {100,600},
+    position = {100,100},
     size = {f32(world.width_tiles - 200), 20},
     outline_thickness = 1,
     outline_color = rl.BLACK,
@@ -239,11 +241,7 @@ main :: proc() {
         color_data = &colors,
       }
 
-      reload_image(img, &texture, &data)
-    }
-
-    if rl.IsKeyPressed(rl.KeyboardKey.Q) {
-      rl.CloseWindow()
+      if reload_image_on_resize do reload_image(img, &texture, &data)
     }
 
     // Draw:
@@ -263,7 +261,12 @@ main :: proc() {
       rl.Color{0, 0, 0, 100}
     )
 
-    gui_colors_slider(colors_ui, &colors, 75) // FIX: can't change hue
+    apply_mid_x := (ui.colors_end_pos.x - ui.colors_start_pos.x)/2 + ui.colors_start_pos.x - ui.apply_width/2
+    apply_mid_y := ui.colors_start_pos.y/2 - ui.apply_height/2 - ui.color_slider_radius/2
+
+    rl.GuiCheckBox({apply_mid_x + ui.apply_width + 5, apply_mid_y, ui.apply_height, ui.apply_height}, "reload map on window resize", &reload_image_on_resize)
+
+    gui_colors_slider(colors_ui, &colors, 75)
 
     gui_number_input(rl.Vector2{ui.algorithm_values_rec.x, ui.algorithm_values_rec.y}, 200, font, "seed", &world.seed)
 
@@ -301,8 +304,8 @@ main :: proc() {
     gui_custom_slider(
       "persistence",
       rl.Rectangle{
-        100,
-        350,
+        ui.algorithm_values_rec.x,
+        ui.algorithm_values_rec.y + ui.algorithm_values_spacing*4,
         200,
         15
       },
@@ -311,22 +314,24 @@ main :: proc() {
     gui_custom_slider(
       "amplitude",
       rl.Rectangle{
-        100,
-        400,
+        ui.algorithm_values_rec.x,
+        ui.algorithm_values_rec.y + ui.algorithm_values_spacing*5,
         200,
         15
       },
       rl.ORANGE, ui.line_color, 2, font, f32(font_size), &world.amplitude, 0, 5, 0.1, 1
     )
 
-    apply_mid_x := (ui.colors_end_pos.x - ui.colors_start_pos.x)/2 + ui.colors_start_pos.x - ui.apply_width/2
-    apply_mid_y := ui.colors_start_pos.y/2 - ui.apply_height/2 - ui.color_slider_radius/2
     if rl.GuiButton(rl.Rectangle{apply_mid_x, apply_mid_y, ui.apply_width, ui.apply_height}, "apply") || rl.IsKeyPressed(rl.KeyboardKey.KP_ENTER) || rl.IsKeyPressed(rl.KeyboardKey.ENTER) {
       reload_image(img, &texture, &data)
     }
 
     rl.DrawFPS(0, 0)
     rl.EndDrawing()
+
+    if rl.IsKeyPressed(rl.KeyboardKey.Q) {
+      break
+    }
   }
 
   rl.UnloadTexture(texture)
